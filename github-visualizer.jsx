@@ -424,12 +424,70 @@ function GlobeView({ onSelect }) {
     if (m) { onSelect(m[1].replace(/\.git$/, "")); return; }
     const parts = q.split("/").filter(Boolean);
     if (parts.length >= 2) { onSelect(`${parts[parts.length - 2]}/${parts[parts.length - 1]}`); return; }
-    // Search match
+    // Pick first suggestion if available
+    if (suggestions.length > 0) { onSelect(suggestions[0].full_name || suggestions[0].name); return; }
+    // Last resort: search local
     const found = REPOS.find(r => r.name.toLowerCase().includes(q.toLowerCase()));
     if (found) onSelect(found.name);
   };
 
-  const filtered = query.length > 0 ? REPOS.filter(r => r.name.toLowerCase().includes(query.toLowerCase())) : [];
+  // Live GitHub search with debounce
+  const [suggestions, setSuggestions] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchMode, setSearchMode] = useState("local"); // "live" or "local"
+  const debounceRef = useRef(null);
+
+  const doSearch = (q) => {
+    if (!q || q.length < 2) { setSuggestions([]); return; }
+
+    // Always show local matches instantly
+    const local = REPOS.filter(r => r.name.toLowerCase().includes(q.toLowerCase()) || r.desc.toLowerCase().includes(q.toLowerCase())).slice(0, 5);
+
+    // Try GitHub Search API
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        // Determine if searching users or repos
+        const isUser = !q.includes("/") && !q.includes(" ");
+        const repoRes = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=6&sort=stars`, { headers: { Accept: "application/vnd.github.v3+json" } });
+        if (!repoRes.ok) throw new Error("api fail");
+        const repoData = await repoRes.json();
+        const repoItems = (repoData.items || []).map(r => ({
+          type: "repo", full_name: r.full_name, name: r.name, desc: r.description || "",
+          stars: r.stargazers_count, avatar: r.owner?.avatar_url, owner: r.owner?.login, lang: r.language,
+        }));
+
+        // Also search users if query looks like a username
+        let userItems = [];
+        if (isUser && q.length >= 2) {
+          try {
+            const userRes = await fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=3`, { headers: { Accept: "application/vnd.github.v3+json" } });
+            if (userRes.ok) {
+              const userData = await userRes.json();
+              userItems = (userData.items || []).map(u => ({
+                type: "user", full_name: u.login, name: u.login, desc: `GitHub user`, avatar: u.avatar_url, owner: u.login, stars: 0,
+              }));
+            }
+          } catch {}
+        }
+
+        const combined = [...userItems.slice(0, 2), ...repoItems.slice(0, 6)];
+        if (combined.length > 0) {
+          setSuggestions(combined);
+          setSearchMode("live");
+        } else {
+          setSuggestions(local.map(r => ({ type: "repo", full_name: r.name, name: r.name.split("/")[1], desc: r.desc, stars: r.stars, owner: r.name.split("/")[0], lang: r.lang })));
+          setSearchMode("local");
+        }
+      } catch {
+        // API unavailable — use local
+        setSuggestions(local.map(r => ({ type: "repo", full_name: r.name, name: r.name.split("/")[1], desc: r.desc, stars: r.stars, owner: r.name.split("/")[0], lang: r.lang })));
+        setSearchMode("local");
+      }
+      setSearchLoading(false);
+    }, 300);
+  };
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", background: T.bg, overflow: "hidden" }}>
@@ -443,30 +501,62 @@ function GlobeView({ onSelect }) {
         <div style={{ fontFamily: SF, fontSize: 14, color: T.textD, marginTop: 8 }}>Hover over stars · Click to explore</div>
       </div>
 
-      {/* Single unified search field */}
-      <div style={{ position: "absolute", bottom: 72, left: "50%", transform: "translateX(-50%)", zIndex: 10, width: "min(520px,90%)" }}>
+      {/* Smart search field */}
+      <div style={{ position: "absolute", bottom: 72, left: "50%", transform: "translateX(-50%)", zIndex: 10, width: "min(560px,92%)" }}>
         <div style={{ position: "relative" }}>
           <input
-            placeholder="Search projects or paste owner/repo URL..."
-            value={query} onChange={e => { setQuery(e.target.value); setShowDropdown(true); }}
-            onKeyDown={e => { if (e.key === "Enter") { handleSubmit(); setShowDropdown(false); } }}
-            onFocus={() => setShowDropdown(true)}
-            onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+            placeholder="Search repos, users, or paste a GitHub URL..."
+            value={query}
+            onChange={e => { setQuery(e.target.value); setShowDropdown(true); doSearch(e.target.value); }}
+            onKeyDown={e => { if (e.key === "Enter") { handleSubmit(); setShowDropdown(false); } if (e.key === "Escape") setShowDropdown(false); }}
+            onFocus={e => { setShowDropdown(true); e.target.style.borderColor = T.acc; if (query) doSearch(query); }}
+            onBlur={() => setTimeout(() => setShowDropdown(false), 250)}
             style={{ width: "100%", padding: "15px 52px 15px 44px", background: "rgba(15,10,30,.88)", border: `1px solid ${T.bdr}`, borderRadius: 16, color: T.text, fontFamily: SF, fontSize: 15, outline: "none", backdropFilter: "blur(24px)", transition: "border-color .2s" }}
-            onFocus={e => e.target.style.borderColor = T.acc}
           />
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.textD} strokeWidth="2" strokeLinecap="round" style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          {searchLoading && <div style={{ position: "absolute", right: 68, top: "50%", transform: "translateY(-50%)", width: 16, height: 16, borderRadius: "50%", border: `2px solid ${T.bdr}`, borderTopColor: T.acc, animation: "spin .6s linear infinite" }} />}
           <button onClick={() => { handleSubmit(); setShowDropdown(false); }}
-            style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", padding: "8px 16px", background: T.acc, border: "none", borderRadius: 11, color: "#fff", fontFamily: SF, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Go</button>
+            style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", padding: "8px 16px", background: T.acc, border: "none", borderRadius: 11, color: "#000", fontFamily: SF, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Go</button>
 
-          {showDropdown && filtered.length > 0 && (
-            <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, right: 0, background: "rgba(15,10,30,.97)", border: `1px solid ${T.bdr}`, borderRadius: 14, padding: 6, maxHeight: 260, overflowY: "auto", backdropFilter: "blur(24px)" }}>
-              {filtered.slice(0, 10).map(r => (
-                <div key={r.name} onMouseDown={() => { onSelect(r.name); setQuery(""); }}
-                  style={{ padding: "10px 14px", cursor: "pointer", borderRadius: 10, color: T.text, fontFamily: SF, fontSize: 14, transition: "background .12s", display: "flex", alignItems: "center", justifyContent: "space-between" }}
-                  onMouseEnter={e => e.currentTarget.style.background = T.surfHov} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <span><span style={{ color: T.textD, fontFamily: SFM, fontSize: 12 }}>{r.name.split("/")[0]}/</span><span style={{ fontWeight: 600 }}>{r.name.split("/")[1]}</span></span>
-                  <span style={{ fontSize: 11, color: T.textD }}>★ {(r.stars/1000).toFixed(0)}k</span>
+          {showDropdown && suggestions.length > 0 && (
+            <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, right: 0, background: "rgba(15,10,30,.97)", border: `1px solid ${T.bdr}`, borderRadius: 14, padding: 6, maxHeight: 340, overflowY: "auto", backdropFilter: "blur(24px)" }}>
+              {/* Source indicator */}
+              <div style={{ padding: "4px 12px 6px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontFamily: SFM, fontSize: 10, color: T.textD }}>{searchMode === "live" ? "GitHub Search Results" : "Local Suggestions"}</span>
+                {searchMode === "live" && <span style={{ fontFamily: SFM, fontSize: 9, padding: "1px 6px", borderRadius: 4, background: "rgba(63,185,80,.15)", color: T.accGreen }}>LIVE</span>}
+              </div>
+              {suggestions.map((s, i) => (
+                <div key={s.full_name + i}
+                  onMouseDown={() => {
+                    if (s.type === "user") {
+                      // For users, search their repos — just set as query hint
+                      setQuery(s.full_name + "/");
+                      doSearch(s.full_name + "/");
+                    } else {
+                      onSelect(s.full_name); setQuery("");
+                    }
+                  }}
+                  style={{ padding: "10px 14px", cursor: "pointer", borderRadius: 10, color: T.text, fontFamily: SF, fontSize: 14, transition: "background .12s", display: "flex", alignItems: "center", gap: 12 }}
+                  onMouseEnter={e => e.currentTarget.style.background = T.surfHov}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  {/* Avatar */}
+                  {s.avatar ? (
+                    <img src={s.avatar} alt="" style={{ width: 28, height: 28, borderRadius: s.type === "user" ? "50%" : 8, flexShrink: 0, border: `1px solid ${T.bdr}` }} />
+                  ) : (
+                    <div style={{ width: 28, height: 28, borderRadius: 8, background: T.surface, flexShrink: 0 }} />
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {s.type === "user" && <span style={{ fontFamily: SFM, fontSize: 9, padding: "1px 5px", borderRadius: 4, background: `${T.accAlt}22`, color: T.accAlt }}>USER</span>}
+                      <span style={{ color: T.textD, fontFamily: SFM, fontSize: 12 }}>{s.owner}/</span>
+                      <span style={{ fontWeight: 600 }}>{s.name}</span>
+                    </div>
+                    {s.desc && <div style={{ fontFamily: SF, fontSize: 11, color: T.textD, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.desc}</div>}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                    {s.lang && <span style={{ fontFamily: SFM, fontSize: 10, color: T.textD }}>{s.lang}</span>}
+                    {s.stars > 0 && <span style={{ fontFamily: SFM, fontSize: 11, color: T.acc }}>★ {s.stars >= 1000 ? (s.stars / 1000).toFixed(s.stars >= 10000 ? 0 : 1) + "k" : s.stars}</span>}
+                  </div>
                 </div>
               ))}
             </div>
