@@ -573,7 +573,7 @@ function GlobeView({ onSelect }) {
 
       {/* HUD */}
       <div style={{ position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 16, color: T.textD, fontFamily: SFM, fontSize: 11, background: "rgba(15,10,30,.6)", padding: "6px 20px", borderRadius: 20, border: `1px solid ${T.bdr}`, backdropFilter: "blur(12px)" }}>
-        <span>{REPOS.length} repos</span><span style={{ opacity: .3 }}>·</span><span>Drag to rotate</span><span style={{ opacity: .3 }}>·</span><span>Click to explore</span>
+        <span>Drag to rotate</span><span style={{ opacity: .3 }}>·</span><span>Click star to explore</span><span style={{ opacity: .3 }}>·</span><span>Search any repo</span>
       </div>
 
       {/* Neulo */}
